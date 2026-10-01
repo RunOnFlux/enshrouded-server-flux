@@ -42,7 +42,9 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
   launcher's own command line also contains `enshrouded_server.exe`, so a bare `pgrep -f
   enshrouded_server.exe` matches the wrong process. Match the drive letter
   (`FLUX_GAME_PATTERN`).
-- **Never write `enshrouded_server.json`.** The games hub's Server Settings tab owns it. FluxOS
+- **Never write `enshrouded_server.json` beyond `queryPort`.** The games hub's Server Settings tab
+  owns it; the only key the image writes is the port from `FLUX_QUERY_PORT` (the hub rolls a random
+  port per server, and the game announces the port it binds, so outside and inside must match). FluxOS
   mounts it as an empty file; on that first start the game writes its own defaults, including
   a random password for the Default group.
 - **`mv` onto the settings file fails** (it is a bind-mounted file: `Device or resource busy`).

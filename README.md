@@ -18,13 +18,15 @@ What it replaces is the entrypoint.
 | Server ends or crashes | The container ends, and the platform has to notice | Restarted in place. The container only ends after 5 unplanned restarts in an hour (exit 42) |
 | Server running but not serving | The container ended when the query port was no longer bound | Restarted in place when the port has been unbound for 3 checks, or when the server has not answered the player query for 10 minutes |
 | First start on Flux | Exits with 1 after 60 s. FluxOS mounts `enshrouded_server.json` empty, so the base image watched for an empty port number. The game was up the whole time | Watches the game's process. Starts once |
-| `enshrouded_server.json` | Rewritten from env on every start, through an `mv` onto the bind-mounted file that fails on Flux (`Device or resource busy`) | Never written. The games hub's Server Settings tab owns it |
+| `enshrouded_server.json` | Rewritten from env on every start, through an `mv` onto the bind-mounted file that fails on Flux (`Device or resource busy`) | The games hub's Server Settings tab owns it. The image writes one key, `queryPort`, from `FLUX_QUERY_PORT`, in place |
+| Port | Always 15637 | `FLUX_QUERY_PORT`: the server binds and announces that port, so several servers can share one node address |
 | `docker stop` | SIGINT to the game | Same, and no restart afterwards |
 
 ## Configuration
 
 | Variable | Default | |
 |---|---|---|
+| `FLUX_QUERY_PORT` | empty (leave the file's port) | The one port the server uses. Written into `queryPort` before every start. On an empty file (Flux's first start) the file becomes `{"queryPort": P}` and the game fills in the rest |
 | `FLUX_RESTART_TIME` | empty (off) | Daily restart, `HH:MM`, 24 hour, in `TZ` |
 | `FLUX_RESTART_MAX_WAIT_MINUTES` | `60` | How long a due restart waits for the server to empty, 0 to 180. 0 restarts on time |
 | `TZ` | UTC | Timezone of `FLUX_RESTART_TIME` |
@@ -61,6 +63,11 @@ These were measured on 2026-10-01, on build 2278520 under GE-Proton10-26:
   `flux-a2s`). While anyone is online it checks again every minute, up to the limit, then
   restarts.
   - A server that does not answer is restarted at once: it is either loading, or hung.
+- **The port is the one the server announces.** Enshrouded uses a single UDP port, `queryPort`
+  (the separate game port went away in Content Update #2). Its A2S reply names that same port as
+  the game port, and there is no setting to announce another one. So the published port has to be
+  the bound port: `FLUX_QUERY_PORT` moves both. Checked with 41234 and 42000: bound, answering,
+  announced, and the rest of the file (name, groups) untouched.
 - **A restart is an update.** The supervisor runs SteamCMD before every start, so a scheduled
   restart is also how a server picks up a new game build.
 - **A plain update does not repair the install.** With `enshrouded_server.kfc` deleted, a plain

@@ -62,6 +62,32 @@ flux_config_state() {
   fi
 }
 
+# $1 = a requested port. True for a whole number 1..65535.
+flux_valid_port() {
+  [[ "$1" =~ ^[0-9]{1,5}$ ]] && [ "$((10#$1))" -ge 1 ] && [ "$((10#$1))" -le 65535 ]
+}
+
+# $1 = the file, $2 = the port it must set (FLUX_QUERY_PORT). Prints the JSON the file should
+# hold, or nothing (status 1) when the file can be left as it is:
+#   - empty or missing: just `{"queryPort": P}`. The game fills in every other key with its own
+#     defaults on that start and keeps the port (verified 2026-10-01: 41234 bound, announced in
+#     A2S, file completed to the full default set).
+#   - valid JSON with another port: the same object with queryPort replaced, nothing else touched.
+#   - valid JSON with this port already, or not valid JSON: nothing. A broken file is the
+#     customer's to fix; rewriting it would throw their settings away.
+flux_config_with_port() {
+  local file="$1" port="$2" state
+  state="$(flux_config_state "${file}")"
+  case "${state}" in
+    missing | empty) printf '{"queryPort": %d}\n' "$((10#${port}))" ;;
+    ok)
+      [ "$(jq -r '.queryPort // empty' "${file}" 2>/dev/null)" = "$((10#${port}))" ] && return 1
+      jq --argjson p "$((10#${port}))" '.queryPort = $p' "${file}"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 # $1 = the file. Prints the query port it sets, or 15637 (the game's default, and the port the
 # marketplace spec publishes) when the file does not say.
 flux_query_port() {

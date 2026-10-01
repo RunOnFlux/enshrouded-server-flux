@@ -18,10 +18,12 @@
 #   - the container ends (exit 42) only after FLUX_RESTART_MAX_ATTEMPTS unplanned restarts inside
 #     FLUX_RESTART_WINDOW seconds: a server that cannot stay up is the platform's to move
 #
-# IT NEVER WRITES enshrouded_server.json. The games hub's Server Settings tab owns that file.
-# The base image rewrote it from env on every start, through an `mv` onto the bind-mounted file
-# that fails on Flux, so it never actually changed anything there; dropping it changes nothing
-# for a running server and removes a write that would fight the panel if it ever worked.
+# enshrouded_server.json BELONGS TO THE GAMES HUB's Server Settings tab, with one exception: the
+# port. With FLUX_QUERY_PORT set, the supervisor makes `queryPort` that number before every start
+# and touches nothing else. The game announces the port it binds (A2S and the server list), and
+# Flux publishes the same number outside, so several servers can share one node address. The
+# write is in place (`cat > file`): the file is bind-mounted, and the base image's `mv` onto it
+# failed on Flux with "Device or resource busy", so its env-driven rewrite never changed anything.
 #
 # Same shape as runonflux/vrising-server-flux and runonflux/palworld-server-flux.
 
@@ -142,11 +144,28 @@ prepare_files() {
     empty) flux_log "enshrouded_server.json is empty: the server writes its own defaults on this start" ;;
     *) flux_log "WARN enshrouded_server.json is not valid JSON; the server may ignore it" ;;
   esac
+  apply_query_port
 
   # The game's log on the container's output (the base image's trick): the game writes to
   # logs/enshrouded_server.log, and that name now points at PID 1's stdout.
   : >"${g}/logs/enshrouded_server.log" 2>/dev/null
   ln -sf /proc/1/fd/1 "${g}/logs/enshrouded_server.log"
+}
+
+# FLUX_QUERY_PORT into enshrouded_server.json, in place. See the header.
+apply_query_port() {
+  local port="${FLUX_QUERY_PORT:-}" content
+  [ -n "${port}" ] || return 0
+  if ! flux_valid_port "${port}"; then
+    flux_log "WARN FLUX_QUERY_PORT='${port}' is not a port; leaving enshrouded_server.json as it is"
+    return 0
+  fi
+  content="$(flux_config_with_port "${FLUX_CONFIG}" "${port}")" || return 0
+  if printf '%s\n' "${content}" >"${FLUX_CONFIG}"; then
+    flux_log "enshrouded_server.json: queryPort set to $((10#${port})) (FLUX_QUERY_PORT)"
+  else
+    flux_log "WARN could not write queryPort ${port} into enshrouded_server.json"
+  fi
 }
 
 # True while this generation is alive: the game is running, or Proton is still launching it.

@@ -116,6 +116,23 @@ check "a port that is not a number" "15637" "$(flux_query_port "${tmp}/badport.j
 check "an empty file" "15637" "$(flux_query_port "${tmp}/empty.json")"
 check "no file" "15637" "$(flux_query_port "${tmp}/nope.json")"
 
+# --- FLUX_QUERY_PORT -----------------------------------------------------------------------------
+check "41234 is a port" "0" "$(status flux_valid_port 41234)"
+check "0 is not" "1" "$(status flux_valid_port 0)"
+check "65536 is not" "1" "$(status flux_valid_port 65536)"
+check "a word is not" "1" "$(status flux_valid_port abc)"
+check "an empty file gets the port alone" '{"queryPort": 41234}' "$(flux_config_with_port "${tmp}/empty.json" 41234)"
+check "a missing file too" '{"queryPort": 41234}' "$(flux_config_with_port "${tmp}/nope.json" 41234)"
+check "a leading zero is not octal" '{"queryPort": 41234}' "$(flux_config_with_port "${tmp}/empty.json" 041234)"
+check "another port is replaced" "41234" "$(flux_config_with_port "${tmp}/ok.json" 41234 | jq -r .queryPort)"
+check "and nothing else changes" "x" "$(flux_config_with_port "${tmp}/ok.json" 41234 | jq -r .name)"
+check "the same port means no write" "1" "$(status flux_config_with_port "${tmp}/ok.json" 16000)"
+check "no port in the file gets one" "41234" "$(flux_config_with_port "${tmp}/noport.json" 41234 | jq -r .queryPort)"
+check "a broken file is left alone" "1" "$(status flux_config_with_port "${tmp}/broken.json" 41234)"
+printf '{"name":"Mine","queryPort":15637,"userGroups":[{"name":"Admin","password":"pw"}],"gameSettings":{"enemyDamageFactor":2}}' >"${tmp}/full.json"
+check "groups survive" "pw" "$(flux_config_with_port "${tmp}/full.json" 50000 | jq -r '.userGroups[0].password')"
+check "game settings survive" "2" "$(flux_config_with_port "${tmp}/full.json" 50000 | jq -r '.gameSettings.enemyDamageFactor')"
+
 # --- A2S client, against a fake Steam query server ---------------------------------------------
 cat >"${tmp}/fake.py" <<'PY'
 import socket, struct, sys
