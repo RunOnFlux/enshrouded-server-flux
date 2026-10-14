@@ -21,6 +21,7 @@ What it replaces is the entrypoint.
 | `enshrouded_server.json` | Rewritten from env on every start, through an `mv` onto the bind-mounted file that fails on Flux (`Device or resource busy`) | The games hub's Server Settings tab owns it. The image writes one key, `queryPort`, from `FLUX_QUERY_PORT`, in place |
 | Port | Always 15637 | `FLUX_QUERY_PORT`: the server binds and announces that port, so several servers can share one node address |
 | `docker stop` | SIGINT to the game | Same, and no restart afterwards |
+| Mods | None | EML (Enshrouded Mod Loader) built in, fed from the `mods` volume, every mod checked before the start, and a safe mode when a set of mods stops the server. See [Mods](#mods) |
 
 ## Configuration
 
@@ -35,6 +36,8 @@ What it replaces is the entrypoint.
 | `SKIP_UPDATE` | empty | Any value: do not update from Steam (when the server is already installed) |
 | `FLUX_STOP_GRACE` | `60` | Seconds a restart may take to save before it is forced. Docker's own stop timeout still applies to `docker stop` |
 | `FLUX_RESTART_MAX_ATTEMPTS` / `FLUX_RESTART_WINDOW` | `5` / `3600` | Unplanned restarts allowed per window before the container ends with 42 |
+| `FLUX_MODS_BOOT_TIMEOUT` | `1800` | Seconds a start with mods may take to open its port before the mods are blamed and the server starts without them |
+| `FLUX_MODS_DISABLED` | empty | Any value: never load mods, whatever the `mods` volume holds |
 
 The base image's `SERVER_NAME`, `SERVER_PASSWORD`, `SERVER_SLOTS`, `PORT`, `SERVER_IP` and
 `EXTERNAL_CONFIG` are not read. Edit `enshrouded_server.json` instead.
@@ -44,6 +47,7 @@ Mounts, as in the marketplace spec:
 - `/home/steam/enshrouded`: the install
 - `/home/steam/enshrouded/savegame`: the world
 - `/home/steam/enshrouded/enshrouded_server.json`: the settings file
+- `/home/steam/mods`: the mods library (`m:mods:/home/steam/mods`, synced to the standby). Optional: without it the server runs as it always has
 
 The supervisor's own log is `/home/steam/enshrouded/flux/flux.log`, and also goes to the
 container output. It is kept off the savegame folder on purpose.
@@ -91,3 +95,51 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
 
 To run it by hand, the three mounts must be owned by 10000:10000. The first start downloads
 about 9 GB.
+
+## Mods
+
+The image carries [EML](https://github.com/Brabb3l/kfc-parser), the Enshrouded Mod Loader
+(GPL-3.0), pinned by version and checksum in the Dockerfile (`EML_VERSION`, now 0.1.2). EML is a
+proxy `dbghelp.dll`: the game loads it, it runs each mod's Lua against the game's data, writes the
+result into the install (`enshrouded_server.kfc`, keeping the original as `.kfc.bak`) and lets the
+server start. Mods are server-side: players do not install anything.
+
+**The library is the `mods` volume.** One entry per mod: a `.zip` (or a folder) with `mod.json` at
+its top level. An entry ending in `.disabled` is off. The games hub's Mods tab manages it; the hub
+repacks a mod downloaded from Nexus so its `mod.json` is at the top.
+
+**Every start:**
+
+1. `flux-mods.py plan` checks each entry the way EML would (`mod.json` present and valid JSON, the
+   id `^[a-z][a-z0-9_-]*$`, a semantic version, known capabilities, valid dependency
+   requirements), refuses a second mod with the same id, and drops a mod whose required
+   dependency is not loaded (a Lua `require` that fails inside EML). It prints why each refused
+   mod is refused, into the container log and the status file.
+2. Nothing loads: mods are off. If EML changed the install before, Steam `validate`s it back
+   (measured: `enshrouded_server.kfc` returns to the exact original hash), and our DLL and EML's
+   backup are removed. A server that never had mods starts exactly as before.
+3. Mods load: the loading ones are copied into `<install>/mods` (the folder EML reads; the
+   library itself never is), `dbghelp.dll` goes beside the server, and the game starts from the
+   install folder with `WINEDLLOVERRIDES="dbghelp=native,builtin"`.
+4. `flux-modwatch.sh` watches that start.
+
+**EML cannot fail quietly**, and that is what the watch is for. Any error, including a Lua error
+in one mod, ends in a Rust panic whose handler opens a Windows message box; on a server with no
+screen the game then never binds its port. The watch reads EML's log (`<install>/flux/eml-log`):
+
+- an ERROR there, or no port after `FLUX_MODS_BOOT_TIMEOUT`: the set of mods is recorded as unsafe
+  (`flux/mods-safe-mode`), the game is killed and started again WITHOUT mods (and validated back).
+  It stays without them until the set changes, which is the only thing that can fix it. This does
+  not count against the restart budget.
+- the port bound: loaded, with EML's patch count.
+
+**Status for the games hub:** `<install>/flux/mods-status.json`, rewritten on every start:
+`mode` (off, on, safe), `phase`, `message`, `failedMod` (the id EML named), `applied` (patches),
+and every library entry with its `state` (active, off, invalid, duplicate, missing-dependency) and
+`reason`.
+
+**Measured on 2026-10-14**, build `ea_update_08` (2026-05-11), GE-Proton10-26, EML 0.1.2: a test mod
+setting `BalancingTable.playerBaseStamina` (100 to 500) loaded and applied 1 patch, and the server
+was online 2 s later. A mod with `error()` in its Lua: detected in 4 s from EML's log, killed,
+validated back, up without mods. A `mod.json` with id `Bad Mod`: refused before the start, the
+other mods loaded.

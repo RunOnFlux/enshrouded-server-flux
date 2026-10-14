@@ -212,6 +212,9 @@ flux_restarts_in_window() {
 flux_restart_counts() {
   case "$1" in
     scheduled*) return 1 ;;
+    # Mods that stopped the server: the next start goes without them (safe mode), so this is a
+    # fix being made, not a server that cannot stay up.
+    mods:*) return 1 ;;
     *) return 0 ;;
   esac
 }
@@ -256,4 +259,69 @@ flux_signal_game() {
 # Players online, or nothing (and status 1) when the server does not answer.
 flux_players_online() {
   python3 "${FLUX_A2S}" "$(flux_query_port "${FLUX_CONFIG}")" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------------------------
+# Mods: EML, the Enshrouded Mod Loader (github.com/Brabb3l/kfc-parser). See flux-mods.py.
+#
+# The customer's library is the `mods` volume (FLUX_MODS_DIR, synced to the standby). EML never
+# sees it: before every start the supervisor checks each entry and copies the ones that will load
+# into `<game dir>/mods`, the folder EML reads, and puts EML's dbghelp.dll beside the server.
+# With nothing to load, both are taken away and the install is put back to Steam's files.
+# ---------------------------------------------------------------------------------------------
+FLUX_MODS_DIR="${FLUX_MODS_DIR:-/home/steam/mods}"
+FLUX_MODS_RUNTIME="${FLUX_MODS_RUNTIME:-${FLUX_GAME_DIR}/mods}"
+FLUX_MODS_STATE="${FLUX_MODS_STATE:-${FLUX_GAME_DIR}/flux}"
+FLUX_MODS_STATUS="${FLUX_MODS_STATUS:-${FLUX_MODS_STATE}/mods-status.json}"
+FLUX_MODS_SAFE="${FLUX_MODS_SAFE:-${FLUX_MODS_STATE}/mods-safe-mode}"
+FLUX_MODS_APPLIED="${FLUX_MODS_APPLIED:-${FLUX_MODS_STATE}/mods-applied}"
+FLUX_MODS_PLAN="${FLUX_MODS_PLAN:-/tmp/flux-mods-plan.json}"
+# EML's log, per start. Relative, because EML resolves it from the game's working directory
+# (the install), and the game is a Windows process that cannot take a Linux path.
+FLUX_EML_LOG_REL="${FLUX_EML_LOG_REL:-flux/eml-log}"
+# shellcheck disable=SC2034  # read by flux-entrypoint.sh and flux-modwatch.sh
+FLUX_EML_LOG_DIR="${FLUX_GAME_DIR}/${FLUX_EML_LOG_REL}"
+FLUX_EML_DLL="${FLUX_EML_DLL:-/opt/flux/eml/dbghelp.dll}"
+FLUX_MODS_PY="${FLUX_MODS_PY:-/opt/flux/flux-mods.py}"
+
+# What this start does with mods.
+#   $1 = mods the plan loads, $2 = the plan's fingerprint, $3 = the fingerprint the safe mode was
+#   set for (empty when none), $4 = FLUX_MODS_DISABLED (any value turns mods off)
+# Prints off, on or safe. Safe is the same set of mods that already stopped the server once: it
+# starts without them until the customer changes the set, which is the only thing that can fix it.
+flux_mods_mode() {
+  local count="$1" fingerprint="$2" safe="$3" disabled="$4"
+  if [ -n "${disabled}" ] || ! [[ "${count}" =~ ^[0-9]+$ ]] || [ "${count}" -eq 0 ]; then
+    printf 'off'
+  elif [ -n "${safe}" ] && [ "${safe}" = "${fingerprint}" ]; then
+    printf 'safe'
+  else
+    printf 'on'
+  fi
+}
+
+# $1 = this start's mode, $2 = the fingerprint EML last patched the install for (empty when it
+# never did, or the install has been put back since), $3 = 1 when EML's backup of the game data
+# (enshrouded_server.kfc.bak) is in the install. True when the install still carries EML's
+# changes and this start runs without them, so Steam must `validate` it back to the original.
+flux_mods_restore_needed() {
+  [ "$1" = "on" ] && return 1
+  [ -n "$2" ] || [ "$3" = "1" ]
+}
+
+# $1 = seconds since the server was launched with mods, $2 = the most it may take to open its
+# port, $3 = errors in EML's log so far, $4 = 1 once the port is bound.
+# Prints wait, loaded or failed. EML stops the server with a message box nobody can click, so a
+# server with mods that does not come up in time is treated as stopped by them.
+flux_mods_boot_verdict() {
+  local elapsed="$1" timeout="$2" errors="$3" bound="$4"
+  if [ "${errors}" -gt 0 ]; then
+    printf 'failed'
+  elif [ "${bound}" = "1" ]; then
+    printf 'loaded'
+  elif [ "${elapsed}" -ge "${timeout}" ]; then
+    printf 'failed'
+  else
+    printf 'wait'
+  fi
 }

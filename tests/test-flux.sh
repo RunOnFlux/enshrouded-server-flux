@@ -174,5 +174,109 @@ fake silent 0
 check "no reply exits 1" "1" "$(status python3 scripts/flux-a2s.py "${port}")"
 kill "${fake_pid}" 2>/dev/null
 
+# --- Mods: the decisions -------------------------------------------------------------------------
+check "no mods is off" "off" "$(flux_mods_mode 0 '' '' '')"
+check "mods load" "on" "$(flux_mods_mode 2 abc '' '')"
+check "the set that failed is safe mode" "safe" "$(flux_mods_mode 2 abc abc '')"
+check "a changed set is tried again" "on" "$(flux_mods_mode 2 abd abc '')"
+check "FLUX_MODS_DISABLED wins" "off" "$(flux_mods_mode 2 abc '' 1)"
+check "a broken count is off" "off" "$(flux_mods_mode x abc '' '')"
+check "mods on never restores" "1" "$(status flux_mods_restore_needed on abc 1)"
+check "off after EML patched restores" "0" "$(status flux_mods_restore_needed off abc 0)"
+check "off with EML's backup restores" "0" "$(status flux_mods_restore_needed off '' 1)"
+check "safe mode restores" "0" "$(status flux_mods_restore_needed safe abc 1)"
+check "a vanilla install is left alone" "1" "$(status flux_mods_restore_needed off '' 0)"
+check "boot: an EML error fails at once" "failed" "$(flux_mods_boot_verdict 3 1800 1 0)"
+check "boot: the port means loaded" "loaded" "$(flux_mods_boot_verdict 30 1800 0 1)"
+check "boot: still loading waits" "wait" "$(flux_mods_boot_verdict 30 1800 0 0)"
+check "boot: too long fails" "failed" "$(flux_mods_boot_verdict 1800 1800 0 0)"
+check "mods restarts do not count" "1" "$(status flux_restart_counts 'mods: EML stopped the server')"
+check "mods restarts validate" "0" "$(status flux_update_validates 'mods: EML stopped the server')"
+
+# --- Mods: reading the library, as EML would -----------------------------------------------------
+lib="${tmp}/lib" run="${tmp}/run"
+mkdir -p "${lib}" "${run}"
+mkzip() { # zip path, then name=content pairs
+  local out="$1"
+  shift
+  python3 - "${out}" "$@" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    for pair in sys.argv[2:]:
+        name, _, content = pair.partition("=")
+        z.writestr(name, content)
+PY
+}
+manifest() { printf '{"id":"%s","name":"%s","version":"%s","capabilities":["patch"]%s}' "$1" "$1" "$2" "${3:-}"; }
+mkzip "${lib}/good.zip" "mod.json=$(manifest good 1.2.0)" "src/mod.lua=print(1)"
+mkzip "${lib}/off.zip.disabled" "mod.json=$(manifest off 1.0.0)" "src/mod.lua=print(1)"
+mkzip "${lib}/nested.zip" "nested/mod.json=$(manifest nested 1.0.0)"
+mkzip "${lib}/badver.zip" "mod.json=$(manifest badver 1.0)"
+mkzip "${lib}/badid.zip" "mod.json=$(manifest Bad_Id 1.0.0)"
+mkzip "${lib}/badcap.zip" 'mod.json={"id":"badcap","name":"x","version":"1.0.0","capabilities":["fly"]}'
+mkzip "${lib}/notjson.zip" "mod.json={nope"
+mkzip "${lib}/zz-dup.zip" "mod.json=$(manifest good 2.0.0)"
+mkzip "${lib}/needs.zip" "mod.json=$(manifest needs 1.0.0 ',"dependencies":[{"id":"absent","version":"^1"}]')"
+mkzip "${lib}/needs-good.zip" "mod.json=$(manifest needsgood 1.0.0 ',"dependencies":[{"id":"good","version":"^2"}]')"
+mkdir -p "${lib}/folder-mod/src" && manifest folder 0.1.0 >"${lib}/folder-mod/mod.json"
+printf 'not a mod' >"${lib}/readme.txt"
+printf 'x' >"${lib}/.hidden.zip"
+python3 scripts/flux-mods.py plan "${lib}" >"${tmp}/plan.json"
+state() { jq -r --arg e "$1" '.mods[] | select(.entry == $e) | .state' "${tmp}/plan.json"; }
+check "a good zip loads" "active" "$(state good.zip)"
+check "a .disabled zip is off" "off" "$(state off.zip.disabled)"
+check "mod.json in a subfolder is refused" "invalid" "$(state nested.zip)"
+check "a two-part version is refused" "invalid" "$(state badver.zip)"
+check "an id with capitals is refused" "invalid" "$(state badid.zip)"
+check "an unknown capability is refused" "invalid" "$(state badcap.zip)"
+check "broken JSON is refused" "invalid" "$(state notjson.zip)"
+check "the second of one id (by name) is refused" "duplicate" "$(state zz-dup.zip)"
+check "a missing dependency is refused" "missing-dependency" "$(state needs.zip)"
+check "a dependency at another version only warns" "active" "$(state needs-good.zip)"
+check "and the warning says so" "wants good ^2, installed is 1.2.0" \
+  "$(jq -r '.mods[] | select(.entry == "needs-good.zip") | .warning' "${tmp}/plan.json")"
+check "a folder mod loads" "active" "$(state folder-mod)"
+check "other files are not mods" "" "$(state readme.txt)"
+check "hidden entries are skipped" "" "$(state .hidden.zip)"
+check "what loads" "folder-mod good.zip needs-good.zip" "$(jq -r '.active | join(" ")' "${tmp}/plan.json")"
+fp1="$(jq -r .fingerprint "${tmp}/plan.json")"
+check "a fingerprint names the set" "16" "${#fp1}"
+mkzip "${lib}/good.zip" "mod.json=$(manifest good 1.2.0)" "src/mod.lua=print(2)"
+check "changing a mod changes the fingerprint" "1" "$([ "$(python3 scripts/flux-mods.py plan "${lib}" | jq -r .fingerprint)" != "${fp1}" ] && echo 1)"
+check "nothing to load, no fingerprint" "" "$(python3 scripts/flux-mods.py plan "${tmp}/nothing" | jq -r .fingerprint)"
+
+# --- Mods: the folder EML reads ------------------------------------------------------------------
+printf 'x' >"${run}/notes.txt"
+mkzip "${run}/handmade.zip" "mod.json=$(manifest handmade 1.0.0)"
+check "a mod put there by hand moves into the library" "handmade.zip" "$(python3 scripts/flux-mods.py adopt "${lib}" "${run}")"
+check "and is in the library" "1" "$([ -f "${lib}/handmade.zip" ] && echo 1)"
+python3 scripts/flux-mods.py plan "${lib}" >"${tmp}/plan.json"
+python3 scripts/flux-mods.py sync "${lib}" "${run}" "${tmp}/plan.json" >/dev/null
+check "sync leaves exactly what loads" "folder-mod good.zip handmade.zip needs-good.zip" "$(find "${run}" -mindepth 1 -maxdepth 1 ! -name '.*' -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+check "and records it" '["folder-mod", "good.zip", "handmade.zip", "needs-good.zip"]' "$(cat "${run}/.flux-synced.json")"
+check "a second sync copies nothing" "" "$(python3 scripts/flux-mods.py sync "${lib}" "${run}" "${tmp}/plan.json")"
+mv "${lib}/good.zip" "${lib}/good.zip.disabled"
+check "our copy of a mod turned off is never adopted back" "" "$(python3 scripts/flux-mods.py adopt "${lib}" "${run}")"
+check "it stays off in the library" "1" "$([ -f "${lib}/good.zip.disabled" ] && [ ! -e "${lib}/good.zip" ] && echo 1)"
+mkzip "${run}/byhand.zip" "mod.json=$(manifest byhand 1.0.0)"
+python3 scripts/flux-mods.py clear "${run}" >/dev/null
+check "clear removes only our copies" "byhand.zip" "$(find "${run}" -mindepth 1 -maxdepth 1 ! -name '.*' -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+
+# --- Mods: EML's log and the status file ---------------------------------------------------------
+mkdir -p "${tmp}/emllog"
+cat >"${tmp}/emllog/2026-10-14.eml.log" <<'LOG'
+{"timestamp":"t","level":"INFO","fields":{"message":"Running mod","mod_id":"good"}}
+{"timestamp":"t","level":"INFO","fields":{"message":"Applied 3 patches"}}
+not json
+LOG
+check "the patch count" "3" "$(python3 scripts/flux-mods.py report "${tmp}/emllog" | jq -r .applied)"
+check "no errors" "0" "$(python3 scripts/flux-mods.py report "${tmp}/emllog" | jq -r '.errors | length')"
+printf '%s\n' '{"timestamp":"t","level":"ERROR","fields":{"message":"Error running mod loader","error":"runtime error: [string \"mods.broken-one\"]:1: boom"}}' >>"${tmp}/emllog/2026-10-14.eml.log"
+check "an error is read" "1" "$(python3 scripts/flux-mods.py report "${tmp}/emllog" | jq -r '.errors | length')"
+python3 scripts/flux-mods.py status "${tmp}/status.json" "${tmp}/plan.json" safe failed "EML stopped the server" 0.1.2 "${tmp}/emllog"
+check "the status names the mod that failed" "broken-one" "$(jq -r .failedMod "${tmp}/status.json")"
+check "the status lists every mod" "good" "$(jq -r '.mods["good.zip"].id' "${tmp}/status.json")"
+check "the status carries the loader version" "0.1.2" "$(jq -r .loader.version "${tmp}/status.json")"
+
 printf '\n%d passed, %d failed\n' "${pass}" "${fail}"
 [ "${fail}" = "0" ]

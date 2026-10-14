@@ -34,6 +34,9 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
 - `scripts/flux-lib.sh`: shared helpers. **Sourcing it must stay side-effect free**: the tests
   source it directly. Every decision takes its inputs as arguments.
 - `scripts/flux-a2s.py`: the player count over Steam A2S_INFO, `flux-a2s` on the PATH.
+- `scripts/flux-mods.py`: EML mods: `plan` (check the library as EML would), `sync`/`clear` (the
+  folder EML reads), `adopt`, `report` (EML's log), `status` (the file the hub reads).
+- `scripts/flux-modwatch.sh`: watches a start with mods; an EML error or no port means safe mode.
 
 ## Things that will bite you
 
@@ -61,3 +64,13 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
   bash runs the stop trap only between commands.
 - **Flux stops a container with Docker's default 10 seconds.** SIGINT saves in about 1 s.
   Anything added to the stop path has to fit in that.
+- **EML panics into a message box.** Any mod error (bad `mod.json`, Lua error) stops the game
+  before it binds its port, silently. Never hand EML anything `flux-mods.py plan` refused, and keep
+  the safe mode: an EML error in its log, or no port in time, means start again without mods.
+- **EML writes into the install.** Taking mods off is not enough to undo them: Steam `validate`
+  puts `enshrouded_server.kfc` back (`flux_mods_restore_needed`). Keep that, or a server keeps
+  playing with mods its owner removed.
+- **The library (`/home/steam/mods`) is never EML's folder.** EML reads `<install>/mods`, which the
+  supervisor rebuilds; `.flux-synced.json` there lists our copies so they are never adopted back.
+- **Moving EML** is a version AND a checksum in the Dockerfile, then a real test: the README's Mods
+  section has the one that was run.

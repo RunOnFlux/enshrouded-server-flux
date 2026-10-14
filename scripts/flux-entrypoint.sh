@@ -17,6 +17,8 @@
 #     restart afterwards
 #   - the container ends (exit 42) only after FLUX_RESTART_MAX_ATTEMPTS unplanned restarts inside
 #     FLUX_RESTART_WINDOW seconds: a server that cannot stay up is the platform's to move
+#   - mods through EML, from the `mods` volume, checked before every start, with a safe mode for a
+#     set that stops the server (flux-mods.py, flux-modwatch.sh)
 #
 # enshrouded_server.json BELONGS TO THE GAMES HUB's Server Settings tab, with one exception: the
 # port. With FLUX_QUERY_PORT set, the supervisor makes `queryPort` that number before every start
@@ -59,6 +61,12 @@ restart_history=()
 # Why the previous generation ended; empty before the first. Decides whether the next update
 # validates (flux_update_validates).
 last_reason=""
+# This generation's mods: off, on or safe (flux_mods_mode), the plan's fingerprint, and whether
+# Steam must put the install back first because EML's changes are in it.
+mods_mode="off"
+mods_fingerprint=""
+mods_restore=0
+modwatch_pid=""
 
 # shellcheck disable=SC2329  # invoked by the trap below
 term_handler() {
@@ -89,15 +97,19 @@ run_steamcmd() {
   return 1
 }
 
-# $1 = why the previous generation ended (see flux_update_validates). Returns 0 when the server
-# can start, 1 when there is nothing to start, 2 when a stop arrived.
+# $1 = why the previous generation ended (see flux_update_validates), $2 = 1 to validate whatever
+# the reason (mods being taken off). Returns 0 when the server can start, 1 when there is nothing
+# to start, 2 when a stop arrived. Sets steam_ok to 1 when SteamCMD finished, which is what tells
+# the mods code the install really was put back.
+steam_ok=0
 update_server() {
   local attempt validate=() rc
+  steam_ok=0
   if [ -n "${SKIP_UPDATE:-}" ] && [ -f "${g}/${FLUX_GAME_PROCESS}" ]; then
     flux_log "SKIP_UPDATE is set: not updating the server files"
     return 0
   fi
-  if flux_update_validates "$1"; then
+  if [ "${2:-0}" = "1" ] || flux_update_validates "$1"; then
     validate=(validate)
     flux_log "updating the server from Steam (app ${FLUX_STEAM_APP}), checking every file"
   else
@@ -106,7 +118,10 @@ update_server() {
   for attempt in 1 2 3 4 5; do
     run_steamcmd "${validate[@]}"
     rc=$?
-    [ "${rc}" = "0" ] && return 0
+    if [ "${rc}" = "0" ]; then
+      [ "${#validate[@]}" -gt 0 ] && steam_ok=1
+      return 0
+    fi
     [ "${rc}" = "2" ] && return 2
     validate=(validate)
     flux_log "WARN steamcmd failed (attempt ${attempt}/5); retrying in 5s with validate"
@@ -168,6 +183,105 @@ apply_query_port() {
   fi
 }
 
+# ── Mods ──────────────────────────────────────────────────────────────────────────────────────
+
+# Before the Steam update: what this start loads, and whether the install must be put back.
+mods_plan() {
+  local count safe bak=0 applied="" moved
+  mods_mode="off" mods_fingerprint="" mods_restore=0
+  mkdir -p "${FLUX_MODS_STATE}" 2>/dev/null
+  if [ ! -d "${FLUX_MODS_DIR}" ]; then
+    # A server deployed before the mods volume existed. Nothing of ours to take off either.
+    printf '{"mods":[],"active":[],"fingerprint":""}\n' >"${FLUX_MODS_PLAN}"
+  else
+    # Mods put straight into the folder EML reads (the Files tab, before the library existed)
+    # move into the library, so the sync below does not delete them.
+    if [ -w "${FLUX_MODS_DIR}" ]; then
+      moved="$(python3 "${FLUX_MODS_PY}" adopt "${FLUX_MODS_DIR}" "${FLUX_MODS_RUNTIME}" 2>/dev/null)"
+      [ -n "${moved}" ] && flux_log "mods: moved into the mods volume: $(tr '\n' ' ' <<<"${moved}")"
+    fi
+    if ! python3 "${FLUX_MODS_PY}" plan "${FLUX_MODS_DIR}" >"${FLUX_MODS_PLAN}" 2>/dev/null; then
+      flux_log "WARN mods: the mods volume could not be read; starting without mods"
+      printf '{"mods":[],"active":[],"fingerprint":""}\n' >"${FLUX_MODS_PLAN}"
+    fi
+  fi
+  count="$(jq -r '.active | length' "${FLUX_MODS_PLAN}" 2>/dev/null)"
+  mods_fingerprint="$(jq -r '.fingerprint // ""' "${FLUX_MODS_PLAN}" 2>/dev/null)"
+  safe="$(head -n 1 "${FLUX_MODS_SAFE}" 2>/dev/null)"
+  mods_mode="$(flux_mods_mode "${count:-0}" "${mods_fingerprint}" "${safe}" "${FLUX_MODS_DISABLED:-}")"
+  [ -f "${g}/enshrouded_server.kfc.bak" ] && bak=1
+  applied="$(head -n 1 "${FLUX_MODS_APPLIED}" 2>/dev/null)"
+  flux_mods_restore_needed "${mods_mode}" "${applied}" "${bak}" && mods_restore=1
+
+  jq -r '.mods[] | select(.state != "active" and .state != "off") | "\(.entry): \(.reason)"' \
+    "${FLUX_MODS_PLAN}" 2>/dev/null | while IFS= read -r line; do flux_log "WARN mods: not loading ${line}"; done
+  case "${mods_mode}" in
+    on) flux_log "mods: loading ${count} with EML ${FLUX_EML_VERSION:-}: $(jq -r '.active | join(", ")' "${FLUX_MODS_PLAN}")" ;;
+    safe) flux_log "mods: this set of mods stopped the server last time ($(sed -n 2p "${FLUX_MODS_SAFE}" 2>/dev/null)); starting without them until it changes" ;;
+  esac
+  [ "${mods_restore}" = "1" ] && flux_log "mods: putting the install back to Steam's files, without EML's changes"
+  return 0
+}
+
+# After the update: the folder EML reads, EML itself, and the status file for the games hub.
+mods_apply() {
+  local changes message
+  if [ "${mods_restore}" = "1" ] && [ "${steam_ok}" = "1" ]; then
+    # Steam has put every file back. EML's backup of the old data and the record of what it
+    # patched describe an install that no longer exists.
+    rm -f "${FLUX_MODS_APPLIED}" "${g}/enshrouded_server.kfc.bak"
+  fi
+  if [ "${mods_mode}" = "on" ]; then
+    if ! changes="$(python3 "${FLUX_MODS_PY}" sync "${FLUX_MODS_DIR}" "${FLUX_MODS_RUNTIME}" "${FLUX_MODS_PLAN}" 2>&1)"; then
+      flux_log "WARN mods: could not prepare the mods folder (${changes}); starting without mods"
+      mods_mode="off"
+    elif ! cmp -s "${FLUX_EML_DLL}" "${g}/dbghelp.dll" && ! cp "${FLUX_EML_DLL}" "${g}/dbghelp.dll"; then
+      flux_log "WARN mods: could not put EML into the install; starting without mods"
+      mods_mode="off"
+    fi
+    [ -n "${changes}" ] && [ "${mods_mode}" = "on" ] && flux_log "mods: $(tr '\n' ',' <<<"${changes}" | sed 's/,$//')"
+  fi
+  if [ "${mods_mode}" != "on" ]; then
+    # No EML. Our copies leave the folder it reads; anything else there was put by hand and stays
+    # (the next start with mods moves it into the library). Only our own copy of the DLL is
+    # removed: a different one was put there by hand, and is left for whoever did.
+    python3 "${FLUX_MODS_PY}" clear "${FLUX_MODS_RUNTIME}" >/dev/null 2>&1
+    if [ -f "${g}/dbghelp.dll" ]; then
+      if cmp -s "${FLUX_EML_DLL}" "${g}/dbghelp.dll"; then
+        rm -f "${g}/dbghelp.dll"
+      else
+        flux_log "WARN mods: a dbghelp.dll that is not ours is in the install; leaving it"
+      fi
+    fi
+  fi
+  rm -rf "${FLUX_EML_LOG_DIR}"
+  case "${mods_mode}" in
+    on) message="Starting with $(jq -r '.active | length' "${FLUX_MODS_PLAN}") mods." ;;
+    safe) message="$(sed -n 2p "${FLUX_MODS_SAFE}" 2>/dev/null). The server runs without mods until the set changes." ;;
+    *) message="" ;;
+  esac
+  [ -d "${FLUX_MODS_DIR}" ] && python3 "${FLUX_MODS_PY}" status "${FLUX_MODS_STATUS}" "${FLUX_MODS_PLAN}" \
+    "${mods_mode}" "$([ "${mods_mode}" = "on" ] && echo starting || echo running)" "${message}" "${FLUX_EML_VERSION:-unknown}" 2>/dev/null
+  return 0
+}
+
+# After a generation with mods that ended before the watch could judge it (EML's panic killed
+# the game rather than leaving it at a message box): the same verdict, from EML's own log.
+mods_check_ended() {
+  local report errors why
+  [ "${mods_mode}" = "on" ] || return 0
+  [ "$(head -n 1 "${FLUX_MODS_APPLIED}" 2>/dev/null)" = "${mods_fingerprint}" ] && return 0
+  report="$(python3 "${FLUX_MODS_PY}" report "${FLUX_EML_LOG_DIR}" 2>/dev/null)"
+  errors="$(jq -r '.errors | length' <<<"${report}" 2>/dev/null)"
+  [[ "${errors}" =~ ^[1-9] ]] || return 0
+  why="EML stopped the server: $(jq -r '.errors[0]' <<<"${report}" | head -c 600)"
+  printf '%s\n%s\n' "${mods_fingerprint}" "${why}" >"${FLUX_MODS_SAFE}"
+  python3 "${FLUX_MODS_PY}" status "${FLUX_MODS_STATUS}" "${FLUX_MODS_PLAN}" safe failed \
+    "${why}. The server is starting again without mods; change or turn off the mod that failed, then restart." \
+    "${FLUX_EML_VERSION:-unknown}" "${FLUX_EML_LOG_DIR}" 2>/dev/null
+  printf 'mods: %s' "${why}"
+}
+
 # True while this generation is alive: the game is running, or Proton is still launching it.
 # The launcher exits as soon as the game is started, and the game shows up a moment later, so
 # until the game has been seen once, a generation younger than FLUX_LAUNCH_GRACE seconds counts
@@ -187,7 +301,8 @@ start_generation() {
   generation=$((generation + 1))
   rm -f "${FLUX_RESTART_MARKER}"
 
-  update_server "${last_reason}"
+  mods_plan
+  update_server "${last_reason}" "${mods_restore}"
   case $? in
     0) ;;
     2) return 2 ;;
@@ -197,12 +312,24 @@ start_generation() {
   # starting one now would only be killed mid-load.
   [ "${terminating}" = "1" ] && return 2
   prepare_files || return 1
+  mods_apply
 
-  flux_log "starting the server (generation ${generation})"
+  flux_log "starting the server (generation ${generation}${mods_mode:+, mods ${mods_mode}})"
   launched_at="$(date -u +%s)"
   game_seen=0
-  WINEDEBUG=-all "${proton}" run "${g}/${FLUX_GAME_PROCESS}" &
-  launcher_pid=$!
+  if [ "${mods_mode}" = "on" ]; then
+    # EML reads `mods` and writes its log relative to the game's working directory, and Wine
+    # only loads a dbghelp.dll from beside the exe when told the native one wins. A server
+    # without mods starts exactly as it always has.
+    (cd "${g}" && WINEDEBUG=-all WINEDLLOVERRIDES="dbghelp=native,builtin" \
+      EML_LOG_FILE_PATH="${FLUX_EML_LOG_REL}" exec "${proton}" run "${g}/${FLUX_GAME_PROCESS}") &
+    launcher_pid=$!
+    /opt/flux/flux-modwatch.sh "${mods_fingerprint}" &
+    modwatch_pid=$!
+  else
+    WINEDEBUG=-all "${proton}" run "${g}/${FLUX_GAME_PROCESS}" &
+    launcher_pid=$!
+  fi
 
   /opt/flux/flux-scheduler.sh &
   scheduler_pid=$!
@@ -221,7 +348,8 @@ end_helper() {
 sweep_generation() {
   end_helper "${scheduler_pid}"
   end_helper "${watchdog_pid}"
-  scheduler_pid="" watchdog_pid=""
+  end_helper "${modwatch_pid}"
+  scheduler_pid="" watchdog_pid="" modwatch_pid=""
   # Whatever Proton and Wine left behind for this generation: the game, then the prefix's
   # wineserver and every Windows service it started (services.exe, explorer.exe and the rest,
   # which otherwise pile up, one set per restart).
@@ -276,6 +404,7 @@ while true; do
     reason="$(cat "${FLUX_RESTART_MARKER}" 2>/dev/null)"
   fi
   sweep_generation
+  [ -z "${reason}" ] && [ "${terminating}" = "0" ] && reason="$(mods_check_ended)"
   rm -f "${FLUX_RESTART_MARKER}"
 
   if [ "${terminating}" = "1" ]; then
