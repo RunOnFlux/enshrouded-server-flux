@@ -47,26 +47,32 @@ while :; do
     wait) continue ;;
     loaded)
       printf '%s\n' "${fingerprint}" >"${FLUX_MODS_APPLIED}"
+      : >"${FLUX_MODS_LOADED_MARKER}"
       rm -f "${FLUX_MODS_SAFE}"
       applied="$(jq -r '.applied // empty' <<<"${report}" 2>/dev/null)"
-      if [ -n "${applied}" ]; then
-        message="EML loaded the mods and applied ${applied} patches."
+      if [ "${applied}" = "1" ]; then
+        message="EML loaded the mods and applied 1 change to the game data."
+      elif [ -n "${applied}" ]; then
+        message="EML loaded the mods and applied ${applied} changes to the game data."
       else
         message="EML loaded the mods; the game data already carried their changes."
       fi
+      # Up, so nothing it logged stopped it; still worth a look, and the status file lists them.
+      [ "${errors}" -gt 0 ] && message="${message} EML also logged ${errors} error(s)."
       flux_log "mods: ${message}"
       status on running "${message}"
       exit 0
       ;;
     failed)
       if [ "${errors}" -gt 0 ]; then
-        why="$(jq -r '.errors[0]' <<<"${report}" 2>/dev/null | head -c 600)"
+        # One line: the safe-mode file is read by line, and EML's Lua errors carry a traceback.
+        why="$(jq -r '.errors[0]' <<<"${report}" 2>/dev/null | flux_one_line | head -c 600)"
         why="EML stopped the server: ${why}"
       else
         why="the server did not come up within $((timeout / 60)) minutes with mods on"
       fi
       [ -f "${FLUX_RESTART_MARKER}" ] && exit 0
-      printf '%s\n%s\n' "${fingerprint}" "${why}" >"${FLUX_MODS_SAFE}"
+      printf '%s\n%s\n%s\n' "${fingerprint}" "${why}" "${FLUX_EML_VERSION:-}" >"${FLUX_MODS_SAFE}"
       status safe failed "${why}. The server is starting again without mods; change or turn off the mod that failed, then restart."
       printf 'mods: %s' "${why}" >"${FLUX_RESTART_MARKER}"
       flux_log "mods: ${why}; starting again without mods"

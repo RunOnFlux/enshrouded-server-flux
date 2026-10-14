@@ -207,7 +207,8 @@ mods_plan() {
   fi
   count="$(jq -r '.active | length' "${FLUX_MODS_PLAN}" 2>/dev/null)"
   mods_fingerprint="$(jq -r '.fingerprint // ""' "${FLUX_MODS_PLAN}" 2>/dev/null)"
-  safe="$(head -n 1 "${FLUX_MODS_SAFE}" 2>/dev/null)"
+  safe="$(flux_mods_safe_for "$(sed -n 1p "${FLUX_MODS_SAFE}" 2>/dev/null)" \
+    "$(sed -n 3p "${FLUX_MODS_SAFE}" 2>/dev/null)" "${FLUX_EML_VERSION:-}")"
   mods_mode="$(flux_mods_mode "${count:-0}" "${mods_fingerprint}" "${safe}" "${FLUX_MODS_DISABLED:-}")"
   [ -f "${g}/enshrouded_server.kfc.bak" ] && bak=1
   applied="$(head -n 1 "${FLUX_MODS_APPLIED}" 2>/dev/null)"
@@ -270,12 +271,12 @@ mods_apply() {
 mods_check_ended() {
   local report errors why
   [ "${mods_mode}" = "on" ] || return 0
-  [ "$(head -n 1 "${FLUX_MODS_APPLIED}" 2>/dev/null)" = "${mods_fingerprint}" ] && return 0
+  [ -f "${FLUX_MODS_LOADED_MARKER}" ] && return 0
   report="$(python3 "${FLUX_MODS_PY}" report "${FLUX_EML_LOG_DIR}" 2>/dev/null)"
   errors="$(jq -r '.errors | length' <<<"${report}" 2>/dev/null)"
   [[ "${errors}" =~ ^[1-9] ]] || return 0
-  why="EML stopped the server: $(jq -r '.errors[0]' <<<"${report}" | head -c 600)"
-  printf '%s\n%s\n' "${mods_fingerprint}" "${why}" >"${FLUX_MODS_SAFE}"
+  why="EML stopped the server: $(jq -r '.errors[0]' <<<"${report}" | flux_one_line | head -c 600)"
+  printf '%s\n%s\n%s\n' "${mods_fingerprint}" "${why}" "${FLUX_EML_VERSION:-}" >"${FLUX_MODS_SAFE}"
   python3 "${FLUX_MODS_PY}" status "${FLUX_MODS_STATUS}" "${FLUX_MODS_PLAN}" safe failed \
     "${why}. The server is starting again without mods; change or turn off the mod that failed, then restart." \
     "${FLUX_EML_VERSION:-unknown}" "${FLUX_EML_LOG_DIR}" 2>/dev/null
@@ -324,6 +325,7 @@ start_generation() {
     (cd "${g}" && WINEDEBUG=-all WINEDLLOVERRIDES="dbghelp=native,builtin" \
       EML_LOG_FILE_PATH="${FLUX_EML_LOG_REL}" exec "${proton}" run "${g}/${FLUX_GAME_PROCESS}") &
     launcher_pid=$!
+    rm -f "${FLUX_MODS_LOADED_MARKER}"
     /opt/flux/flux-modwatch.sh "${mods_fingerprint}" &
     modwatch_pid=$!
   else

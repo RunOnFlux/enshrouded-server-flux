@@ -19,6 +19,12 @@ check() { # description, expected, actual
 }
 status() { "$@" >/dev/null 2>&1; echo $?; }
 
+# Every script parses: a script that does not is a helper that silently never runs (the mods
+# watch once lost a quote and only the supervisor's own end-of-generation check was left).
+for f in scripts/*.sh; do
+  check "${f} parses" "0" "$(status bash -n "${f}")"
+done
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"; kill "${fake_pid:-}" 2>/dev/null' EXIT
 
@@ -181,6 +187,10 @@ check "the set that failed is safe mode" "safe" "$(flux_mods_mode 2 abc abc '')"
 check "a changed set is tried again" "on" "$(flux_mods_mode 2 abd abc '')"
 check "FLUX_MODS_DISABLED wins" "off" "$(flux_mods_mode 2 abc '' 1)"
 check "a broken count is off" "off" "$(flux_mods_mode x abc '' '')"
+check "a traceback becomes one line" "boom stack traceback: [C]: in ?" "$(printf 'boom\nstack traceback:\n\t[C]: in ?\n' | flux_one_line)"
+check "safe mode holds for the same EML" "abc" "$(flux_mods_safe_for abc 0.1.2 0.1.2)"
+check "a safe mode from before versions holds" "abc" "$(flux_mods_safe_for abc '' 0.1.2)"
+check "another EML gets the set one more try" "" "$(flux_mods_safe_for abc 0.1.2 0.1.3)"
 check "mods on never restores" "1" "$(status flux_mods_restore_needed on abc 1)"
 check "off after EML patched restores" "0" "$(status flux_mods_restore_needed off abc 0)"
 check "off with EML's backup restores" "0" "$(status flux_mods_restore_needed off '' 1)"
@@ -188,6 +198,7 @@ check "safe mode restores" "0" "$(status flux_mods_restore_needed safe abc 1)"
 check "a vanilla install is left alone" "1" "$(status flux_mods_restore_needed off '' 0)"
 check "boot: an EML error fails at once" "failed" "$(flux_mods_boot_verdict 3 1800 1 0)"
 check "boot: the port means loaded" "loaded" "$(flux_mods_boot_verdict 30 1800 0 1)"
+check "boot: a bound port wins over a logged error" "loaded" "$(flux_mods_boot_verdict 30 1800 1 1)"
 check "boot: still loading waits" "wait" "$(flux_mods_boot_verdict 30 1800 0 0)"
 check "boot: too long fails" "failed" "$(flux_mods_boot_verdict 1800 1800 0 0)"
 check "mods restarts do not count" "1" "$(status flux_restart_counts 'mods: EML stopped the server')"

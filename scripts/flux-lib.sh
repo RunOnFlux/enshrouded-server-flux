@@ -276,6 +276,9 @@ FLUX_MODS_STATUS="${FLUX_MODS_STATUS:-${FLUX_MODS_STATE}/mods-status.json}"
 FLUX_MODS_SAFE="${FLUX_MODS_SAFE:-${FLUX_MODS_STATE}/mods-safe-mode}"
 FLUX_MODS_APPLIED="${FLUX_MODS_APPLIED:-${FLUX_MODS_STATE}/mods-applied}"
 FLUX_MODS_PLAN="${FLUX_MODS_PLAN:-/tmp/flux-mods-plan.json}"
+# Set by the watch when THIS generation came up with its mods. Per container (in /tmp), because a
+# set that loaded yesterday says nothing about today: a game update can break it.
+FLUX_MODS_LOADED_MARKER="${FLUX_MODS_LOADED_MARKER:-/tmp/flux-mods-loaded}"
 # EML's log, per start. Relative, because EML resolves it from the game's working directory
 # (the install), and the game is a Windows process that cannot take a Linux path.
 FLUX_EML_LOG_REL="${FLUX_EML_LOG_REL:-flux/eml-log}"
@@ -284,11 +287,27 @@ FLUX_EML_LOG_DIR="${FLUX_GAME_DIR}/${FLUX_EML_LOG_REL}"
 FLUX_EML_DLL="${FLUX_EML_DLL:-/opt/flux/eml/dbghelp.dll}"
 FLUX_MODS_PY="${FLUX_MODS_PY:-/opt/flux/flux-mods.py}"
 
+# stdin on one line: newlines and tabs become single spaces, the ends trimmed. For text that goes
+# into a file read line by line (the safe-mode file), such as EML's errors with their traceback.
+flux_one_line() {
+  tr '\n\t' '  ' | tr -s ' ' | sed 's/^ //; s/ $//'
+}
+
+# The fingerprint the safe mode holds against this image, from the safe-mode file's lines:
+#   $1 = the fingerprint it was set for, $2 = the EML version that failed, $3 = this image's EML.
+# Empty when the safe mode was set by another EML: a newer loader may run the same mods, so the
+# set gets one more try instead of staying off for good.
+flux_mods_safe_for() {
+  local fingerprint="$1" failed_eml="$2" eml="$3"
+  [ -n "${failed_eml}" ] && [ "${failed_eml}" != "${eml}" ] && return 0
+  printf '%s' "${fingerprint}"
+}
+
 # What this start does with mods.
 #   $1 = mods the plan loads, $2 = the plan's fingerprint, $3 = the fingerprint the safe mode was
 #   set for (empty when none), $4 = FLUX_MODS_DISABLED (any value turns mods off)
 # Prints off, on or safe. Safe is the same set of mods that already stopped the server once: it
-# starts without them until the customer changes the set, which is the only thing that can fix it.
+# starts without them until the set changes (or EML does, flux_mods_safe_for).
 flux_mods_mode() {
   local count="$1" fingerprint="$2" safe="$3" disabled="$4"
   if [ -n "${disabled}" ] || ! [[ "${count}" =~ ^[0-9]+$ ]] || [ "${count}" -eq 0 ]; then
@@ -312,13 +331,15 @@ flux_mods_restore_needed() {
 # $1 = seconds since the server was launched with mods, $2 = the most it may take to open its
 # port, $3 = errors in EML's log so far, $4 = 1 once the port is bound.
 # Prints wait, loaded or failed. EML stops the server with a message box nobody can click, so a
-# server with mods that does not come up in time is treated as stopped by them.
+# server with mods that does not come up in time is treated as stopped by them. The port wins
+# over an error: EML logs some ERRORs it carries on from, and a server that bound its port is up,
+# whatever its log says. An error that stopped it never lets it get that far.
 flux_mods_boot_verdict() {
   local elapsed="$1" timeout="$2" errors="$3" bound="$4"
-  if [ "${errors}" -gt 0 ]; then
-    printf 'failed'
-  elif [ "${bound}" = "1" ]; then
+  if [ "${bound}" = "1" ]; then
     printf 'loaded'
+  elif [ "${errors}" -gt 0 ]; then
+    printf 'failed'
   elif [ "${elapsed}" -ge "${timeout}" ]; then
     printf 'failed'
   else
