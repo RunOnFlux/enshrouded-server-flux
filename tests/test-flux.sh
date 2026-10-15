@@ -99,7 +99,9 @@ check "a watchdog restart is counted" "0" "$(status flux_restart_counts 'watchdo
 
 # --- The game's process -------------------------------------------------------------------------
 matches() { printf '%s\n' "$1" | grep -cE "${FLUX_GAME_PATTERN}"; }
-check "Wine's game process matches" "1" "$(matches 'X:\enshrouded\enshrouded_server.exe')"
+check "Wine's game process matches" "1" "$(matches 'Z:\home\steam\enshrouded\enshrouded_server.exe')"
+check "and as Proton named it" "1" "$(matches 'X:\enshrouded\enshrouded_server.exe')"
+check "Wine's launcher does not" "0" "$(matches 'wine Z:\home\steam\enshrouded\enshrouded_server.exe')"
 check "Proton's launcher does not" "0" "$(matches '/home/steam/steamcmd/compatibilitytools.d/GE-Proton10-26/proton run /home/steam/enshrouded/enshrouded_server.exe')"
 check "the image's own entrypoint does not" "0" "$(matches '/bin/bash /home/steam/entrypoint.sh enshrouded_server.exe')"
 check "Wine's services match the sweep" "1" "$(printf '%s\n' 'C:\windows\system32\services.exe' | grep -cE "${FLUX_WINE_SERVICES_PATTERN}")"

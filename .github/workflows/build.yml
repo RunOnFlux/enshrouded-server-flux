@@ -64,14 +64,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # The image must still have what the supervisor calls: the base image's Proton and
+      # The image must still have what the supervisor calls: Wine, the base image's
       # SteamCMD where the scripts expect them, tzdata for TZ, and the scripts themselves.
       - name: Smoke test the published image
         run: |
           docker run --rm --entrypoint bash "${IMAGE_NAME}:${{ github.sha }}" -c '
             set -e
             test "$(id -u)" = 10000
-            test -x "${STEAMCMD_PATH}/compatibilitytools.d/GE-Proton${GE_PROTON_VERSION}/proton"
+            wine --version | grep -q "^wine-10"
+            command -v wineboot wineserver >/dev/null
             test -x "${STEAMCMD_PATH}/steamcmd.sh"
             test -f /usr/share/zoneinfo/Europe/Lisbon
             test -f /home/steam/enshrouded_server_example.json

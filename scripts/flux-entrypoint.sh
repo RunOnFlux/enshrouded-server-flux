@@ -6,8 +6,9 @@
 # the server ends, the container ends, and nothing starts it again until the platform notices.
 # It has no schedule of any kind, so a server only updated when its container was recreated.
 #
-# This supervisor keeps everything the base image does on a start (same Proton, same paths, same
-# user, same SteamCMD install) and adds:
+# This supervisor keeps everything the base image does on a start (same paths, same user, same
+# SteamCMD install), runs the server under plain Wine instead of Proton (Enshrouded 1.0 needs the
+# Steam client the server ships with; see the Dockerfile), and adds:
 #
 #   - a daily restart (flux-scheduler.sh, FLUX_RESTART_TIME), which also updates the server
 #   - a watchdog (flux-watchdog.sh) that restarts a server which is running but not serving
@@ -42,12 +43,15 @@ FLUX_STOP_GRACE="${FLUX_STOP_GRACE:-60}"
 FLUX_LAUNCH_GRACE="${FLUX_LAUNCH_GRACE:-60}"
 
 g="${FLUX_GAME_DIR}"
-proton="${STEAMCMD_PATH}/compatibilitytools.d/GE-Proton${GE_PROTON_VERSION}/proton"
-wineserver="$(dirname "${proton}")/files/bin/wineserver"
+# The exe by its Windows path, so Wine names the game's process `Z:\...\enshrouded_server.exe`,
+# which is what FLUX_GAME_PATTERN matches.
+# Its console output is dropped: the game writes the same lines to logs/enshrouded_server.log,
+# which the base image links to the container's log, so they would show twice.
+game_exe="Z:${g//\//\\}\\${FLUX_GAME_PROCESS}"
 
 rm -f "${FLUX_RESTART_MARKER}"
 
-flux_log "flux-entrypoint starting (image ${FLUX_IMAGE_VERSION:-dev}, base ${FLUX_BASE_IMAGE:-unknown}, GE-Proton${GE_PROTON_VERSION})"
+flux_log "flux-entrypoint starting (image ${FLUX_IMAGE_VERSION:-dev}, base ${FLUX_BASE_IMAGE:-unknown}, $(wine --version 2>/dev/null))"
 
 launcher_pid=""
 launched_at=0
@@ -283,7 +287,7 @@ mods_check_ended() {
   printf 'mods: %s' "${why}"
 }
 
-# True while this generation is alive: the game is running, or Proton is still launching it.
+# True while this generation is alive: the game is running, or Wine is still launching it.
 # The launcher exits as soon as the game is started, and the game shows up a moment later, so
 # until the game has been seen once, a generation younger than FLUX_LAUNCH_GRACE seconds counts
 # as alive. Only until then: a game that has exited is gone, and holding on for the rest of the
@@ -315,6 +319,16 @@ start_generation() {
   prepare_files || return 1
   mods_apply
 
+  # The container's Wine prefix, made once, before the first start: in the background and waited
+  # on, like anything long in PID 1.
+  if [ ! -f "${WINEPREFIX}/system.reg" ]; then
+    flux_log "making the Wine prefix"
+    wineboot --init >/dev/null 2>&1 &
+    wait $!
+    wineserver -w 2>/dev/null &
+    wait $!
+    [ "${terminating}" = "1" ] && return 2
+  fi
   flux_log "starting the server (generation ${generation}${mods_mode:+, mods ${mods_mode}})"
   launched_at="$(date -u +%s)"
   game_seen=0
@@ -322,14 +336,14 @@ start_generation() {
     # EML reads `mods` and writes its log relative to the game's working directory, and Wine
     # only loads a dbghelp.dll from beside the exe when told the native one wins. A server
     # without mods starts exactly as it always has.
-    (cd "${g}" && WINEDEBUG=-all WINEDLLOVERRIDES="dbghelp=native,builtin" \
-      EML_LOG_FILE_PATH="${FLUX_EML_LOG_REL}" exec "${proton}" run "${g}/${FLUX_GAME_PROCESS}") &
+    (cd "${g}" && WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+${WINEDLLOVERRIDES};}dbghelp=native,builtin" \
+      EML_LOG_FILE_PATH="${FLUX_EML_LOG_REL}" exec wine "${game_exe}" >/dev/null) &
     launcher_pid=$!
     rm -f "${FLUX_MODS_LOADED_MARKER}"
     /opt/flux/flux-modwatch.sh "${mods_fingerprint}" &
     modwatch_pid=$!
   else
-    WINEDEBUG=-all "${proton}" run "${g}/${FLUX_GAME_PROCESS}" &
+    (cd "${g}" && exec wine "${game_exe}" >/dev/null) &
     launcher_pid=$!
   fi
 
@@ -352,13 +366,13 @@ sweep_generation() {
   end_helper "${watchdog_pid}"
   end_helper "${modwatch_pid}"
   scheduler_pid="" watchdog_pid="" modwatch_pid=""
-  # Whatever Proton and Wine left behind for this generation: the game, then the prefix's
+  # Whatever Wine left behind for this generation: the game, then the prefix's
   # wineserver and every Windows service it started (services.exe, explorer.exe and the rest,
   # which otherwise pile up, one set per restart).
   flux_signal_game KILL
-  WINEPREFIX="${STEAM_COMPAT_DATA_PATH}/pfx" "${wineserver}" -k 2>/dev/null
+  wineserver -k 2>/dev/null
   sleep 1
-  pkill -KILL -x wineserver 2>/dev/null
+  pkill -KILL -x 'wineserver(64)?' 2>/dev/null
   pkill -KILL -f "${FLUX_WINE_SERVICES_PATTERN}" 2>/dev/null
   launcher_pid=""
 }
@@ -414,7 +428,7 @@ while true; do
     exit 0
   fi
 
-  # No exit code: the only process this shell can wait on is Proton's launcher, which had
+  # No exit code: the only process this shell can wait on is Wine's launcher, which had
   # already exited 0 long before the game ended.
   [ -z "${reason}" ] && reason="the server ended on its own"
   last_reason="${reason}"

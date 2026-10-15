@@ -5,7 +5,7 @@ The Enshrouded dedicated server image for the [Flux](https://runonflux.io/) mark
 
 It is built on the image the marketplace already deploys,
 [sknnr/enshrouded-dedicated-server](https://github.com/jsknnr/enshrouded-server), pinned by
-digest. It has the same Debian, GE-Proton, SteamCMD, `steam` user (10000:10000) and paths, so a
+digest. It has the same Debian, SteamCMD, `steam` user (10000:10000) and paths, so a
 server moved onto it starts from the install, world and `enshrouded_server.json` it already has.
 What it replaces is the entrypoint.
 
@@ -53,6 +53,11 @@ The supervisor's own log is `/home/steam/enshrouded/flux/flux.log`, and also goe
 container output. It is kept off the savegame folder on purpose.
 
 ## How a stop and a restart work
+
+Since 2026-10-15 (Enshrouded 1.0) the server runs under plain Wine (Debian's 10.0), not the base
+image's GE-Proton: 1.0 needs the Steam client the server ships with, and Proton replaces it with
+its own (see the Dockerfile). Measured on 1.0 (SVN 1265863) under Wine: the world loads in about
+12 s, and `docker stop` saves and ends the server in about 2 s.
 
 These were measured on 2026-10-01, on build 2278520 under GE-Proton10-26:
 

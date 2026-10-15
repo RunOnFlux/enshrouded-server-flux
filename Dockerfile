@@ -1,7 +1,8 @@
 # Enshrouded dedicated server image for Flux.
 #
 # Built ON the image the Flux marketplace already deploys, sknnr/enshrouded-dedicated-server,
-# pinned by digest: the same Debian, GE-Proton, SteamCMD, steam user (10000:10000) and paths.
+# pinned by digest: the same Debian, SteamCMD, steam user (10000:10000) and paths (Wine replaces
+# its GE-Proton, see below).
 # A server moved onto this image starts from the install, world and enshrouded_server.json it
 # already has. What it adds is a supervisor that restarts in place, restarts on a daily
 # schedule (updating from Steam each time) and never rewrites the settings file. See README.md.
@@ -21,7 +22,27 @@ ARG FLUX_IMAGE_VERSION=dev
 ARG EML_VERSION=0.1.2
 ARG EML_DBGHELP_SHA256=7a1334fadbcf68fa3099d6757ad3e110d7196945cf3a2b102e44f451d0295dcd
 
+# Wine, in place of the base image's GE-Proton (2026-10-15, Enshrouded 1.0). The 1.0 server asks
+# Steam for SteamUtils011. Proton routes the game's Steam client through its own lsteamclient,
+# and 10-26's does not know that interface, so the server stopped at "Failed to initialize
+# Steamworks system...Version Mismatch". GE-Proton11-9 knows it, but the game hangs there before
+# its first log line. Plain Wine loads the steamclient64.dll the server ships with (it has
+# SteamUtils011) and runs 1.0. Debian's own Wine, pinned by version; the prefix is the
+# container's own, made on the first start. Proton is removed, so nothing can launch through it.
+ARG WINE_VERSION=10.0~repack-6
+
 USER root
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      "wine=${WINE_VERSION}" "wine64=${WINE_VERSION}" "libwine=${WINE_VERSION}" && \
+    rm -rf /var/lib/apt/lists/* \
+      "${STEAMCMD_PATH}/compatibilitytools.d/GE-Proton${GE_PROTON_VERSION}" \
+      "${STEAMCMD_PATH}/steamapps/compatdata"
+# mscoree/mshtml off: no Mono or Gecko installer prompt while the prefix is made.
+ENV WINEPREFIX=/home/steam/.wine-enshrouded \
+    WINEDEBUG=-all \
+    WINEDLLOVERRIDES="mscoree,mshtml=" \
+    GE_PROTON_VERSION=
 RUN mkdir -p /opt/flux/eml && \
     curl -fsSL -o /opt/flux/eml/dbghelp.dll \
       "https://github.com/Brabb3l/kfc-parser/releases/download/v${EML_VERSION}/dbghelp.dll" && \

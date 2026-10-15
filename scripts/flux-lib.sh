@@ -236,10 +236,11 @@ flux_update_validates() {
 # The running server.
 # ---------------------------------------------------------------------------------------------
 
-# The game's own process, as Wine names it: `X:\enshrouded\enshrouded_server.exe`. Proton's
-# launcher (`proton run …`) starts it and EXITS AT ONCE with 0 (measured 2026-10-01), so the
-# launcher's pid says nothing about the server; and its command line also contains the exe's
-# name, which is why this matches the drive letter Wine puts in front.
+# The game's own process, as Wine names it: `Z:\home\steam\enshrouded\enshrouded_server.exe`
+# (it was `X:\enshrouded\…` under Proton, until 2026-10-15). The launcher (`wine …`, and
+# `proton run …` before it) can exit while the game runs on, so its pid says nothing about the
+# server; and its command line also contains the exe's name, which is why this matches the drive
+# letter Wine puts in front.
 FLUX_GAME_PATTERN="${FLUX_GAME_PATTERN:-^[A-Z]:.*${FLUX_GAME_PROCESS//./\\.}}"
 
 # Wine's own Windows services for the prefix (C:\windows\system32\services.exe and the rest).

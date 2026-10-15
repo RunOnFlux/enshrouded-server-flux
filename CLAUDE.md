@@ -25,7 +25,7 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
 ## The files
 
 - `scripts/flux-entrypoint.sh`: PID 1. Each generation runs a SteamCMD update, checks the folder
-  and settings file, then launches `proton run enshrouded_server.exe` and the scheduler.
+  and settings file, then launches `wine Z:\...\enshrouded_server.exe` and the scheduler.
   SIGTERM/SIGINT become SIGINT to the game.
 - `scripts/flux-scheduler.sh`: the daily restart (`FLUX_RESTART_TIME`). It waits for players to
   leave.
@@ -40,11 +40,16 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
 
 ## Things that will bite you
 
-- **Proton's launcher exits at once (code 0).** The game runs on as
-  `X:\enshrouded\enshrouded_server.exe`. Watch `flux_game_pid`, never the launcher's pid. The
-  launcher's own command line also contains `enshrouded_server.exe`, so a bare `pgrep -f
-  enshrouded_server.exe` matches the wrong process. Match the drive letter
-  (`FLUX_GAME_PATTERN`).
+- **Plain Wine, not Proton (since 2026-10-15).** Enshrouded 1.0 asks Steam for SteamUtils011.
+  Under GE-Proton10-26 the server stops at `Failed to initialize Steamworks system...Version
+  Mismatch` (Proton swaps in its own lsteamclient, which does not know it); under GE-Proton11-9 it
+  hangs before its first log line. Plain Wine uses the steamclient64.dll the server ships with.
+  Do not move back to Proton without running 1.0 to `Switching state ... to Run` first.
+- **The launcher can exit while the game runs.** The game runs as
+  `Z:\home\steam\enshrouded\enshrouded_server.exe` (it was `X:\enshrouded\...` under Proton).
+  Watch `flux_game_pid`, never the launcher's pid. The launcher's own command line also contains
+  `enshrouded_server.exe`, so a bare `pgrep -f enshrouded_server.exe` matches the wrong process.
+  Match the drive letter (`FLUX_GAME_PATTERN`).
 - **Never write `enshrouded_server.json` beyond `queryPort`.** The games hub's Server Settings tab
   owns it; the only key the image writes is the port from `FLUX_QUERY_PORT` (the hub rolls a random
   port per server, and the game announces the port it binds, so outside and inside must match). FluxOS
