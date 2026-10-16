@@ -54,10 +54,13 @@ container output. It is kept off the savegame folder on purpose.
 
 ## How a stop and a restart work
 
-Since 2026-10-15 (Enshrouded 1.0) the server runs under plain Wine (Debian's 10.0), not the base
-image's GE-Proton: 1.0 needs the Steam client the server ships with, and Proton replaces it with
-its own (see the Dockerfile). Measured on 1.0 (SVN 1265863) under Wine: the world loads in about
-12 s, and `docker stop` saves and ends the server in about 2 s.
+Since 2026-10-15 (Enshrouded 1.0) the server runs under Wine, not the base image's GE-Proton:
+1.0 needs the Steam client the server ships with, and Proton replaces it with its own (see the
+Dockerfile). Since 2026-10-16 that Wine is Kron4ek's 10.0 staging-tkg with fsync (`WINEFSYNC=1`,
+esync as the fallback): upstream Wine routes every thread wait through wineserver, and the game's
+task threads made it cost half the server's CPU in the kernel. Measured on 1.0 under the fsync
+build: the world loads in about 4 s, an idle server uses 0.43 cores (0.56 before) with a 0.9 ms
+tick (1.9 ms), and `docker stop` saves and ends the server in about 3 s.
 
 These were measured on 2026-10-01, on build 2278520 under GE-Proton10-26:
 

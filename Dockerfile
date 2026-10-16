@@ -27,21 +27,41 @@ ARG EML_DBGHELP_SHA256=7a1334fadbcf68fa3099d6757ad3e110d7196945cf3a2b102e44f451d
 # and 10-26's does not know that interface, so the server stopped at "Failed to initialize
 # Steamworks system...Version Mismatch". GE-Proton11-9 knows it, but the game hangs there before
 # its first log line. Plain Wine loads the steamclient64.dll the server ships with (it has
-# SteamUtils011) and runs 1.0. Debian's own Wine, pinned by version; the prefix is the
-# container's own, made on the first start. Proton is removed, so nothing can launch through it.
-ARG WINE_VERSION=10.0~repack-6
+# SteamUtils011) and runs 1.0. The prefix is the container's own, made on the first start. Proton
+# is removed, so nothing can launch through it.
+#
+# Which Wine (2026-10-16): Wine 10.0 staging-tkg from Kron4ek/Wine-Builds, for its fsync and esync.
+# Upstream Wine (Debian's 10.0, WineHQ staging 11) sends every event wait and SetEvent of the
+# game's task threads through wineserver: an idle server made ~11,000 wineserver calls a second,
+# spent 73% of its CPU in the kernel, and a customer server with 3 players logged "Bad Performance"
+# every 5 s on 2.5 of its 5 cores. fsync does those waits on futexes in the game's own process.
+# Measured idle on 5 vCPU: wineserver 0.25 -> 0.01 cores, kernel 0.41 -> 0.09, game tick 1.9 ->
+# 0.9 ms. Newer TKG builds (10.16 on) dropped fsync/esync for ntsync, which needs /dev/ntsync, a
+# device Flux cannot pass into a container. The wow64 build is 64-bit only (no i386 libraries).
+# Pinned by checksum; moving it is a version AND a checksum, then a real 1.0 run.
+ARG WINE_TKG_VERSION=10.0
+ARG WINE_TKG_SHA256=fe9b45a6ac181c7fe6290ea83e3a6d4abb8ca08d79236ffd95ede5413a9faa80
 
 USER root
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      "wine=${WINE_VERSION}" "wine64=${WINE_VERSION}" "libwine=${WINE_VERSION}" && \
+    apt-get install -y --no-install-recommends xz-utils && \
     rm -rf /var/lib/apt/lists/* \
       "${STEAMCMD_PATH}/compatibilitytools.d/GE-Proton${GE_PROTON_VERSION}" \
-      "${STEAMCMD_PATH}/steamapps/compatdata"
+      "${STEAMCMD_PATH}/steamapps/compatdata" && \
+    pkg="wine-${WINE_TKG_VERSION}-staging-tkg-amd64-wow64" && \
+    curl -fsSL -o "/tmp/${pkg}.tar.xz" \
+      "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_TKG_VERSION}/${pkg}.tar.xz" && \
+    echo "${WINE_TKG_SHA256}  /tmp/${pkg}.tar.xz" | sha256sum -c - && \
+    tar -xJf "/tmp/${pkg}.tar.xz" -C /opt && mv "/opt/${pkg}" /opt/wine && rm "/tmp/${pkg}.tar.xz"
 # mscoree/mshtml off: no Mono or Gecko installer prompt while the prefix is made.
-ENV WINEPREFIX=/home/steam/.wine-enshrouded \
+# WINEFSYNC needs futex_waitv (Linux 5.16+, allowed by Docker's default seccomp profile); where it
+# is missing Wine says so and falls back to esync (eventfd), and only then to wineserver.
+ENV PATH=/opt/wine/bin:${PATH} \
+    WINEPREFIX=/home/steam/.wine-enshrouded \
     WINEDEBUG=-all \
     WINEDLLOVERRIDES="mscoree,mshtml=" \
+    WINEFSYNC=1 \
+    WINEESYNC=1 \
     GE_PROTON_VERSION=
 RUN mkdir -p /opt/flux/eml && \
     curl -fsSL -o /opt/flux/eml/dbghelp.dll \

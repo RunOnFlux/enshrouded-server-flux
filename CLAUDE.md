@@ -45,6 +45,11 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
   Mismatch` (Proton swaps in its own lsteamclient, which does not know it); under GE-Proton11-9 it
   hangs before its first log line. Plain Wine uses the steamclient64.dll the server ships with.
   Do not move back to Proton without running 1.0 to `Switching state ... to Run` first.
+- **The Wine must have fsync or esync** (since 2026-10-16: Kron4ek 10.0 staging-tkg, pinned by
+  checksum). Upstream Wine, WineHQ staging 11 and TKG 10.16+ (ntsync only: Flux cannot pass
+  `/dev/ntsync`) put every wait through wineserver, and a 3-player server hit "Bad Performance"
+  on half its cores. The container log must say `fsync: up and running.` (or `esync:`). Wine-proton
+  11 (Kron4ek) dies before the game's first log line, like GE-Proton11-9.
 - **The launcher can exit while the game runs.** The game runs as
   `Z:\home\steam\enshrouded\enshrouded_server.exe` (it was `X:\enshrouded\...` under Proton).
   Watch `flux_game_pid`, never the launcher's pid. The launcher's own command line also contains
