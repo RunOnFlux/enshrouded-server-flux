@@ -51,6 +51,7 @@ game_exe="Z:${g//\//\\}\\${FLUX_GAME_PROCESS}"
 
 rm -f "${FLUX_RESTART_MARKER}"
 
+flux_banner "Enshrouded"
 flux_log "flux-entrypoint starting (image ${FLUX_IMAGE_VERSION:-dev}, base ${FLUX_BASE_IMAGE:-unknown}, $(wine --version 2>/dev/null))"
 
 launcher_pid=""
@@ -329,6 +330,7 @@ start_generation() {
     wait $!
     [ "${terminating}" = "1" ] && return 2
   fi
+  flux_banner "Enshrouded"
   flux_log "starting the server (generation ${generation}${mods_mode:+, mods ${mods_mode}})"
   launched_at="$(date -u +%s)"
   game_seen=0

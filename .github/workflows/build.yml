@@ -2,14 +2,21 @@ name: Test, build and publish
 
 # The base image (sknnr/enshrouded-dedicated-server) is pinned by digest in the Dockerfile, so a
 # push to main publishes exactly what was tested, and the base only moves when someone changes
-# that pin. Publishing :latest does not touch running servers: a Flux app only takes a new image
-# when its spec is updated or it is redeployed.
+# that pin. Publishing :latest DOES reach running servers: FluxOS's image update service checks
+# every app's tag every six hours and soft-redeploys onto a new image, which restarts the server
+# with no warning in game. So a scheduled run publishes only when there is something to apply
+# (.github/ci/needs-rebuild.sh), since even a rebuild of unchanged inputs gets a new digest.
 
 on:
   push:
     branches:
       - main
   pull_request:
+  schedule:
+    # Mondays: a check, and a build only when needs-rebuild.sh finds commits on main (touching the
+    # image inputs) that the published image does not have. The base is pinned, so there is no
+    # security-update rule.
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 env:
@@ -28,15 +35,34 @@ jobs:
 
       # Pinned, so "shellcheck is clean on my machine" means the same thing here.
       - name: Shellcheck
-        run: docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.sh tests/*.sh
+        run: docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.sh tests/*.sh .github/ci/*.sh
 
       - name: Unit tests
         run: ./tests/test-flux.sh
 
-  build:
-    needs: test
-    # A pull request gets the tests and nothing else: it must not publish.
+  # Is there anything to publish? Always yes for a push or a manual run; for the scheduled run, see
+  # .github/ci/needs-rebuild.sh.
+  check:
     if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The check compares the published image's revision label with this history.
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: check
+        run: .github/ci/needs-rebuild.sh "${IMAGE_NAME}"
+
+  build:
+    needs: [test, check]
+    # A pull request gets the tests and nothing else: it must not publish. A scheduled run with
+    # nothing new stops at the check.
+    if: github.event_name != 'pull_request' && needs.check.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -80,4 +106,8 @@ jobs:
             flux-a2s 1 >/dev/null 2>&1 || [ $? = 1 ]
             bash -n /opt/flux/flux-entrypoint.sh
             bash -n /opt/flux/flux-scheduler.sh
+            # flux.log is on the install path (the ml: mount on Flux), and the banner is printed
+            out="$(bash -c "source /opt/flux/flux-lib.sh; flux_banner Enshrouded")"
+            grep -q "Enshrouded server image by FluxCloud - https://runonflux.com" <<<"${out}"
+            grep -q "Host this and 30+ other games" /home/steam/enshrouded/flux/flux.log
           '

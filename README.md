@@ -49,8 +49,10 @@ Mounts, as in the marketplace spec:
 - `/home/steam/enshrouded/enshrouded_server.json`: the settings file
 - `/home/steam/mods`: the mods library (`m:mods:/home/steam/mods`, synced to the standby). Optional: without it the server runs as it always has
 
-The supervisor's own log is `/home/steam/enshrouded/flux/flux.log`, and also goes to the
-container output. It is kept off the savegame folder on purpose.
+The supervisor's own log is `/home/steam/enshrouded/flux/flux.log` (5 MB, then one `.1`), and also goes
+to the container output. It is on the install, the `ml:` mount (local, never synced), and kept off the
+savegame folder on purpose. The FluxCloud start-up banner is printed at the container start and for
+every server generation.
 
 ## How a stop and a restart work
 

@@ -84,3 +84,5 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
   supervisor rebuilds; `.flux-synced.json` there lists our copies so they are never adopted back.
 - **Moving EML** is a version AND a checksum in the Dockerfile, then a real test: the README's Mods
   section has the one that was run.
+- **`flux.log` is local** (`$FLUX_GAME_DIR/flux/flux.log`: the install is the `ml:` mount, never synced; 5 MB then one `.1`), never in `savegame`. `flux_banner` prints the FluxCloud banner at container start and every generation; its text is tested.
+- **The scheduled CI run publishes only with something to apply** (`.github/ci/needs-rebuild.sh`): commits on main since the published `:latest` (label `org.opencontainers.image.revision`) that touch the image inputs. There is deliberately no security-update rule: the base is a third-party image pinned by digest and the Dockerfile does not `apt-get upgrade` it, so a rebuild would not apply one.

@@ -291,5 +291,28 @@ check "the status names the mod that failed" "broken-one" "$(jq -r .failedMod "$
 check "the status lists every mod" "good" "$(jq -r '.mods["good.zip"].id' "${tmp}/status.json")"
 check "the status carries the loader version" "0.1.2" "$(jq -r .loader.version "${tmp}/status.json")"
 
+# --- flux.log: local, rotated, migrated; the start-up banner -------------------------------------
+lt="$(mktemp -d)"
+rule='====================================================================='
+want="$(printf '%s\n %s server image by FluxCloud - https://runonflux.com\n Host this and 30+ other games in one click: https://runonflux.com/games\n%s' "${rule}" "Test Game" "${rule}")"
+banner_out="$(FLUX_LOG="${lt}/logs/flux.log" flux_banner "Test Game")"
+check "the banner is exactly the FluxCloud text" "${want}" "${banner_out}"
+check "the banner is ASCII only" "0" "$(printf '%s' "${banner_out}" | LC_ALL=C grep -c -P '[^\x00-\x7F]')"
+check "the banner goes to flux.log too" "${want}" "$(cat "${lt}/logs/flux.log")"
+# shellcheck source=scripts/flux-lib.sh
+check "flux.log lives in flux/ on the install volume by default" "/x/flux/flux.log" "$(unset FLUX_LOG FLUX_LOG_DIR; FLUX_GAME_DIR=/x; source scripts/flux-lib.sh; echo "${FLUX_LOG}")"
+check "an empty FLUX_LOG writes no file" "" "$(FLUX_LOG="" flux_log hello >/dev/null; ls "${lt}/none" 2>/dev/null)"
+for i in $(seq 1 40); do FLUX_LOG="${lt}/logs/flux.log" FLUX_LOG_MAX_BYTES=500 flux_log "line number ${i} padding padding padding" >/dev/null; done
+check "flux.log rotates to one .1" "1" "$([ -s "${lt}/logs/flux.log.1" ] && echo 1 || echo 0)"
+check "and the live file stays under the cap" "1" "$([ "$(stat -c %s "${lt}/logs/flux.log")" -le 600 ] && echo 1 || echo 0)"
+check "no second rotated copy" "1" "$(status test -e "${lt}/logs/flux.log.2")"
+printf 'old 1\nold 2\n' >"${lt}/old.log"
+printf 'new 1\n' >"${lt}/mig.log"
+FLUX_LOG="${lt}/mig.log" flux_log_migrate "${lt}/old.log" "${lt}/absent.log"
+check "an old flux.log is appended to the new one" "new 1 old 1 old 2" "$(tr '\n' ' ' <"${lt}/mig.log" | sed 's/ $//')"
+check "and deleted from the data volume" "1" "$(status test -e "${lt}/old.log")"
+check "migrating with nothing to migrate is harmless" "0" "$(FLUX_LOG="${lt}/mig.log" status flux_log_migrate "${lt}/old.log")"
+rm -rf "${lt}"
+
 printf '\n%d passed, %d failed\n' "${pass}" "${fail}"
 [ "${fail}" = "0" ]
