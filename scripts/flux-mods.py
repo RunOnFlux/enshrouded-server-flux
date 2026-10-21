@@ -33,7 +33,9 @@ import time
 import zipfile
 
 # The manifest rules, as EML enforces them (mod-loader-base/src/registry/manifest.rs, serde).
-ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+# EML takes any string as an id; a dot breaks its Lua require (`mods.<id>.<path>` is split on
+# dots) and the id becomes file names (`<id>.zip`, `<id>_<dll>`). Case is fine: EMBER is "EMBER".
+ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 CAPABILITIES = {"export", "patch", "runtime", "runtime-register-dll"}
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -172,8 +174,7 @@ def check_manifest(data):
         return summary, "mod.json has no \"id\""
     if not ID_RE.match(summary["id"]):
         return summary, (
-            f"the id \"{summary['id']}\" is not allowed: lowercase letters, digits, - and _ only, "
-            "starting with a letter"
+            f"the id \"{summary['id']}\" cannot be used: letters, digits, - and _ only"
         )
     if not summary["name"]:
         return summary, "mod.json has no \"name\""
@@ -505,7 +506,7 @@ def write_status(out, plan, mode, phase, message, loader, report=None):
         status["applied"] = report.get("applied")
         status["errors"] = report.get("errors", [])[:5]
     # EML names a failing mod's chunk `mods.<id>`: the mod the customer has to fix or turn off.
-    m = re.search(r"mods\.([a-z][a-z0-9_-]*)", " ".join([message or ""] + status.get("errors", [])))
+    m = re.search(r"mods\.([A-Za-z0-9_-]+)", " ".join([message or ""] + status.get("errors", [])))
     if m:
         status["failedMod"] = m.group(1)
     d = os.path.dirname(out) or "."

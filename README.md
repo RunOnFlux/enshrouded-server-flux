@@ -121,7 +121,7 @@ repacks a mod downloaded from Nexus so its `mod.json` is at the top.
 **Every start:**
 
 1. `flux-mods.py plan` checks each entry the way EML would (`mod.json` present and valid JSON, the
-   id `^[a-z][a-z0-9_-]*$`, a semantic version, known capabilities, valid dependency
+   id `^[A-Za-z0-9_-]+$` (EML itself accepts any string; dots break its Lua require), a semantic version, known capabilities, valid dependency
    requirements), refuses a second mod with the same id, and drops a mod whose required
    dependency is not loaded (a Lua `require` that fails inside EML). It prints why each refused
    mod is refused, into the container log and the status file.
