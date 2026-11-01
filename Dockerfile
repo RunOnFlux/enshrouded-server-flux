@@ -19,8 +19,8 @@ ARG FLUX_IMAGE_VERSION=dev
 # the supervisor puts beside the server when the `mods` volume has mods to load. Pinned by version
 # AND checksum, so a moved release tag cannot change what runs on customer servers. Moving it is a
 # deliberate change, tested with real mods on a real server.
-ARG EML_VERSION=0.1.2
-ARG EML_DBGHELP_SHA256=7a1334fadbcf68fa3099d6757ad3e110d7196945cf3a2b102e44f451d0295dcd
+ARG EML_VERSION=0.2.0
+ARG EML_DBGHELP_SHA256=038b7a1787026007a68c82a6adeb8e79c2e644f936d4cd00f8b0db206a2349fa
 
 # Wine, in place of the base image's GE-Proton (2026-10-15, Enshrouded 1.0). The 1.0 server asks
 # Steam for SteamUtils011. Proton routes the game's Steam client through its own lsteamclient,

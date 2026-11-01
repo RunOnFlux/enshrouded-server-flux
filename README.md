@@ -109,7 +109,7 @@ about 9 GB.
 ## Mods
 
 The image carries [EML](https://github.com/Brabb3l/kfc-parser), the Enshrouded Mod Loader
-(GPL-3.0), pinned by version and checksum in the Dockerfile (`EML_VERSION`, now 0.1.2). EML is a
+(GPL-3.0), pinned by version and checksum in the Dockerfile (`EML_VERSION`, now 0.2.0, the first with Enshrouded 1.0 support: 0.1.2 reads KFC3 and stops on the 1.0 KFC4 files). EML is a
 proxy `dbghelp.dll`: the game loads it, it runs each mod's Lua against the game's data, writes the
 result into the install (`enshrouded_server.kfc`, keeping the original as `.kfc.bak`) and lets the
 server start. Mods are server-side: players do not install anything.
